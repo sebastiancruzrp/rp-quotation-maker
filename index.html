@@ -379,16 +379,20 @@ function fetchSheet() {
       const headers = parsed.meta.fields || [];
 
       sheetCols = {
-        quotationNo: matchHeader(headers, ["Quotation No", "Quotation No.", "Quote No", "Quote No."]),
-        pn: matchHeader(headers, ["PN", "Part Number", "Part No", "Part No."]),
-        brand: matchHeader(headers, ["Brand"]),
-        itemName: matchHeader(headers, ["Item Name", "Item Name / Model", "Model", "Item Name/Model"]),
-        description: matchHeader(headers, ["Description"]),
-        unitPrice: matchHeader(headers, ["Offer Price", "Unit Price"]),
-        vatMode: matchHeader(headers, ["VAT Mode", "VAT", "Vat Ex/Inc"]),
-        qty: matchHeader(headers, ["QTY", "Qty", "Quantity"]),
-        uom: matchHeader(headers, ["UOM"]),
-      };
+  quotationNo: matchHeader(headers, ["Quotation No", "Quotation No.", "Quote No", "Quote No."]),
+  pn: matchHeader(headers, ["PN", "Part Number", "Part No", "Part No."]),
+  brand: matchHeader(headers, ["Brand"]),
+  itemName: matchHeader(headers, ["Item Name", "Item Name / Model", "Model", "Item Name/Model"]),
+  description: matchHeader(headers, ["Description"]),
+
+  // Keep these separate
+  offerPrice: matchHeader(headers, ["Offer Price"]),
+  unitPrice: matchHeader(headers, ["Unit Price"]),
+
+  vatMode: matchHeader(headers, ["VAT Mode", "VAT", "Vat Ex/Inc"]),
+  qty: matchHeader(headers, ["QTY", "Qty", "Quantity"]),
+  uom: matchHeader(headers, ["UOM"]),
+};
 
       const required = Object.entries(sheetCols).filter(([k, v]) => v === null && k !== "vatMode" && k !== "brand");
       if (required.length) {
@@ -422,18 +426,35 @@ function loadItemsForSelectedQuote() {
   const matching = sheetRows.filter((row) => row[sheetCols.quotationNo].trim() === selected);
   clearItems();
   matching.forEach((row) => {
-    // Check both offer price and unit price columns
-    const rawOffer = sheetCols.offerPrice ? parseFloat(String(row[sheetCols.offerPrice]).replace(/[^0-9.-]+/g, "")) : 0;
-    const rawUnit = sheetCols.unitPrice ? parseFloat(String(row[sheetCols.unitPrice]).replace(/[^0-9.-]+/g, "")) : 0;
-    const finalPrice = rawOffer || rawUnit || 0;
+    // Prefer Offer Price. If it is blank or invalid, fall back to Unit Price.
+const offerPrice =
+  sheetCols.offerPrice != null
+    ? parseFloat(String(row[sheetCols.offerPrice] ?? "").replace(/[^0-9.-]+/g, ""))
+    : NaN;
 
-    // Check VAT Mode explicitly: if cell contains 'EX', use EX; otherwise default to INC
-    const rawVatStr = sheetCols.vatMode ? (row[sheetCols.vatMode] || "").toString().trim().toUpperCase() : "";
-    const vatRaw = rawVatStr.includes("EX") ? "EX" : "INC";
+const unitPrice =
+  sheetCols.unitPrice != null
+    ? parseFloat(String(row[sheetCols.unitPrice] ?? "").replace(/[^0-9.-]+/g, ""))
+    : NaN;
+
+const finalPrice =
+  !isNaN(offerPrice)
+    ? offerPrice
+    : !isNaN(unitPrice)
+      ? unitPrice
+      : 0;
+
+// VAT Mode
+const rawVatStr =
+  sheetCols.vatMode != null
+    ? (row[sheetCols.vatMode] || "").toString().trim().toUpperCase()
+    : "";
+
+const vatRaw = rawVatStr.includes("EX") ? "EX" : "INC";
 
     addRow({
       pn: (row[sheetCols.pn] || "").trim(),
-      brand: sheetCols.brand ? (row[sheetCols.brand] || "").trim() : "",
+      brand: sheetCols.brand != null ? (row[sheetCols.brand] || "").trim() : "",
       showPn: false,
       showInStock: false,
       itemName: (row[sheetCols.itemName] || "").trim(),
