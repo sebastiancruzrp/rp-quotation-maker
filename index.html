@@ -87,8 +87,8 @@
     </div>
   </div>
   <div class="grid" style="grid-template-columns: 1fr; margin-top:14px;">
-    <div><label>Validity (auto-filled from client type — edit if needed)</label><input id="validityText" value="30 calendar days from date of quotation"></div>
-    <div><label>Payment (auto-filled from customer status — edit if needed)</label><input id="paymentText" value="Cash on delivery*"></div>
+    <div><label>Validity</label><input id="validityText" value="30 calendar days from date of quotation"></div>
+    <div><label>Payment</label><input id="paymentText" value="Cash on delivery*"></div>
     <div><label>Delivery</label><input id="deliveryText" value="4-16 weeks from date of receiving purchase order"></div>
   </div>
 </div>
@@ -422,7 +422,15 @@ function loadItemsForSelectedQuote() {
   const matching = sheetRows.filter((row) => row[sheetCols.quotationNo].trim() === selected);
   clearItems();
   matching.forEach((row) => {
-    const vatRaw = sheetCols.vatMode ? (row[sheetCols.vatMode] || "").trim().toUpperCase() : "EX";
+    // Check both offer price and unit price columns
+    const rawOffer = sheetCols.offerPrice ? parseFloat(String(row[sheetCols.offerPrice]).replace(/[^0-9.-]+/g, "")) : 0;
+    const rawUnit = sheetCols.unitPrice ? parseFloat(String(row[sheetCols.unitPrice]).replace(/[^0-9.-]+/g, "")) : 0;
+    const finalPrice = rawOffer || rawUnit || 0;
+
+    // Check VAT Mode explicitly: if cell contains 'EX', use EX; otherwise default to INC
+    const rawVatStr = sheetCols.vatMode ? (row[sheetCols.vatMode] || "").toString().trim().toUpperCase() : "";
+    const vatRaw = rawVatStr.includes("EX") ? "EX" : "INC";
+
     addRow({
       pn: (row[sheetCols.pn] || "").trim(),
       brand: sheetCols.brand ? (row[sheetCols.brand] || "").trim() : "",
@@ -430,9 +438,9 @@ function loadItemsForSelectedQuote() {
       showInStock: false,
       itemName: (row[sheetCols.itemName] || "").trim(),
       description: (row[sheetCols.description] || "").trim(),
-      unitPrice: parseFloat(row[sheetCols.unitPrice]) || 0,
-      vatMode: vatRaw.startsWith("IN") ? "INC" : "EX",
-      qty: parseFloat(row[sheetCols.qty]) || 1,
+      unitPrice: finalPrice,
+      vatMode: vatRaw,
+      qty: parseFloat(String(row[sheetCols.qty]).replace(/[^0-9.-]+/g, "")) || 1,
       uom: (row[sheetCols.uom] || "unit").trim(),
     });
   });
