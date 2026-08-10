@@ -326,6 +326,7 @@ const VALIDITY_PRIVATE = "30 calendar days from date of quotation";
 const VALIDITY_GOVT = "120 calendar days from date of quotation";
 const PAYMENT_NEW = "Cash on delivery*";
 const PAYMENT_EXISTING = "30 calendar days";
+const DEFAULT_DELIVERY = "4-16 weeks from date of receiving purchase order";
 const SHEET_URL_KEY = "rainphil_quote_sheet_url";
 const DRAFT_KEY = "rainphil_quote_draft";
 const INCLUDED_LABEL = "Included";
@@ -520,6 +521,17 @@ function toggleIncluded(checkbox, opts) {
   updatePriceSource(tr);
   recalc();
   if (!opts?.skipSave) scheduleDraftSave();
+}
+
+function normalizeDeliveryText() {
+  const el = document.getElementById("deliveryText");
+  if (!el) return;
+  const value = (el.value || "").trim();
+  // Older drafts could contain the published-sheet URL because of a previous
+  // field-mapping bug. Never allow a sheet URL to become quotation delivery text.
+  if (!value || /^https?:\/\//i.test(value) || /docs\.google\.com\/spreadsheets/i.test(value)) {
+    el.value = DEFAULT_DELIVERY;
+  }
 }
 
 function updateTermsPreview() {
@@ -778,6 +790,9 @@ function generateDocx() {
       });
     });
 
+    normalizeDeliveryText();
+    const deliveryText = document.getElementById("deliveryText").value.trim() || DEFAULT_DELIVERY;
+
     const zip = new PizZip(b64ToArrayBuffer(TEMPLATE_B64));
     const doc = new window.docxtemplater(zip, { paragraphLoop: true, linebreaks: true });
 
@@ -792,7 +807,7 @@ function generateDocx() {
       salutation: document.getElementById("salutation").value,
       validity_text: document.getElementById("validityText").value,
       payment_text: document.getElementById("paymentText").value,
-      delivery_text: document.getElementById("deliveryText").value,
+      delivery_text: deliveryText,
       items: items,
       grand_total_label: quoteIsVE ? "GRAND TOTAL (VAT Ex.)" : "GRAND TOTAL (VAT Inc.)",
       grand_subtotal: fmt(grandSub),
@@ -884,6 +899,7 @@ function restoreDraft() {
         if (draft.fields[id] != null) document.getElementById(id).value = draft.fields[id];
       });
     }
+    normalizeDeliveryText();
     document.getElementById("clientTypePrivate").checked = draft.clientType !== "govt";
     document.getElementById("clientTypeGovt").checked = draft.clientType === "govt";
     document.getElementById("isNewCustomer").checked = draft.isNewCustomer !== false;
