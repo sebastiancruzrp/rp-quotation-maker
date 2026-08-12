@@ -1143,9 +1143,7 @@ function fetchSheet(auto) {
       return res.text();
     })
     .then((csvText) => {
-      // CRM export has its column headers on row 2; skip the first row before parsing.
-      const crmCsv = String(csvText || "").split(/\r?\n/).slice(1).join("\n");
-      const parsed = Papa.parse(crmCsv, { header: true, skipEmptyLines: true });
+      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
       if (parsed.errors.length) console.warn("CSV parse warnings:", parsed.errors);
       const headers = parsed.meta.fields || [];
 
@@ -1237,8 +1235,10 @@ function fetchAccountsSheet(auto) {
       return res.text();
     })
     .then((csvText) => {
-      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-      if (parsed.errors.length) console.warn("CSV parse warnings:", parsed.errors);
+      // CRM / Accounts CSV has its column headers on row 2; skip the first row.
+      const crmCsv = String(csvText || "").split(/\r?\n/).slice(1).join("\n");
+      const parsed = Papa.parse(crmCsv, { header: true, skipEmptyLines: true });
+      if (parsed.errors.length) console.warn("CRM CSV parse warnings:", parsed.errors);
       const headers = parsed.meta.fields || [];
 
       accountCols = {
