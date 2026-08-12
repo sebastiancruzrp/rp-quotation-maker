@@ -1143,7 +1143,9 @@ function fetchSheet(auto) {
       return res.text();
     })
     .then((csvText) => {
-      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+      // CRM export has its column headers on row 2; skip the first row before parsing.
+      const crmCsv = String(csvText || "").split(/\r?\n/).slice(1).join("\n");
+      const parsed = Papa.parse(crmCsv, { header: true, skipEmptyLines: true });
       if (parsed.errors.length) console.warn("CSV parse warnings:", parsed.errors);
       const headers = parsed.meta.fields || [];
 
