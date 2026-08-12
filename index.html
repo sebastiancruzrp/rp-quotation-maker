@@ -1244,8 +1244,17 @@ function fetchAccountsSheet(auto) {
       accountCols = {
         account: matchHeader(headers, ["Account", "Client Name", "Company", "Company Name"]),
         address: matchHeader(headers, ["Client Address", "Address"]),
-        attentionName: matchHeader(headers, ["Attention Name", "Attention", "Contact Name", "Contact Person", "Contact"]),
-        attentionPosition: matchHeader(headers, ["Attention Position", "Position", "Contact Position", "Designation"]),
+        // CRM uses "Name/Point Person" for the contact-name column.
+        attentionName: matchHeader(headers, [
+          "Attention Name", "Attention", "Contact Name", "Contact Person",
+          "Contact", "Name/Point Person", "Name / Point Person", "Point Person",
+          "Point Person Name", "Name"
+        ]),
+        // CRM uses "Job Title" for the contact-position column.
+        attentionPosition: matchHeader(headers, [
+          "Attention Position", "Position", "Contact Position",
+          "Designation", "Job Title", "Job Position", "Title"
+        ]),
       };
 
       if (accountCols.account == null) {
@@ -1255,8 +1264,16 @@ function fetchAccountsSheet(auto) {
       }
 
       accountRows = parsed.data.filter((row) => (row[accountCols.account] || "").trim());
-      statusEl.className = "status ok";
-      statusEl.textContent = "Fetched " + accountRows.length + " account(s).";
+      statusEl.className = accountCols.attentionName
+        ? "status ok"
+        : "status err";
+      statusEl.textContent = accountCols.attentionName
+        ? "Fetched " + accountRows.length + " CRM row(s). Contact column: " +
+          accountCols.attentionName +
+          (accountCols.attentionPosition ? " | Position: " + accountCols.attentionPosition : "")
+        : "Fetched " + accountRows.length +
+          " CRM row(s), but no contact-name column was detected. Found headers: " +
+          headers.join(", ");
       scheduleDraftSave();
 
       // Retroactively fill the currently loaded client, if any.
