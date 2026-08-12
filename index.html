@@ -872,12 +872,28 @@ function generateDocx() {
     const zip = new PizZip(b64ToArrayBuffer(TEMPLATE_B64));
     const doc = new window.docxtemplater(zip, { paragraphLoop: true, linebreaks: true });
 
+    // Build the attention block from paired name/position lines.
+    // The embedded DOCX template uses {{attention_block}}, so do not pass
+    // the old separate attention_name / attention_position fields here.
+    const attentionNames = document.getElementById("attention_name").value
+      .split(/\r?\n/)
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    const attentionPositions = document.getElementById("attention_position").value
+      .split(/\r?\n/)
+      .map(s => s.trim());
+
+    const attentionBlock = attentionNames.map((name, i) => {
+      const position = attentionPositions[i] || "";
+      return position ? name + "\n" + position : name;
+    }).join("\n");
+
     doc.render({
       date: document.getElementById("date").value,
       client_name: document.getElementById("client_name").value,
       client_address: document.getElementById("client_address").value,
-      attention_name: document.getElementById("attention_name").value,
-      attention_position: document.getElementById("attention_position").value,
+      attention_block: attentionBlock,
       quotation_no: document.getElementById("quotation_no").value,
       subject: document.getElementById("subject").value,
       salutation: document.getElementById("salutation").value,
