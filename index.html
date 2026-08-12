@@ -1097,7 +1097,15 @@ function fetchSheet(auto) {
       const quoteNos = [...new Set(sheetRows.map((r) => r[sheetCols.quotationNo].trim()))].sort();
       const select = document.getElementById("quoteNoSelect");
       const prev = select.value;
-      select.innerHTML = quoteNos.map((q) => `<option value="${q}">${q}</option>`).join("");
+      select.innerHTML = quoteNos.map((q) => {
+        let label = q;
+        if (sheetCols.account != null) {
+          const firstRow = sheetRows.find((r) => r[sheetCols.quotationNo].trim() === q);
+          const acct = (firstRow?.[sheetCols.account] || "").trim();
+          if (acct) label = q + " — " + acct;
+        }
+        return `<option value="${escapeAttr(q)}">${escapeText(label)}</option>`;
+      }).join("");
       document.getElementById("quoteNoPicker").style.display = quoteNos.length ? "block" : "none";
 
       if (prev && quoteNos.includes(prev)) select.value = prev;
