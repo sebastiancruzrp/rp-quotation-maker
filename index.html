@@ -1186,12 +1186,19 @@ function loadItemsForSelectedQuote() {
   if (!matching.length) addRow();
 
   document.getElementById("quotation_no").value = selected;
+
+  // A newly selected quote should never inherit client details from whatever
+  // was previously loaded. Clear first, then refill from the sheet if available.
+  document.getElementById("client_name").value = "";
+  document.getElementById("client_address").value = "";
+  let acct = "";
   if (sheetCols.account != null && matching.length) {
-    const acct = (matching[0][sheetCols.account] || "").trim();
+    acct = (matching[0][sheetCols.account] || "").trim();
     if (acct) document.getElementById("client_name").value = acct;
   }
+
   statusEl.className = "status ok";
-  statusEl.textContent = "Loaded " + matching.length + " item(s) for " + selected + ".";
+  statusEl.textContent = "Loaded " + matching.length + " item(s) for " + selected + (acct ? " — " + acct : "") + ".";
   updateQuoteSummary();
   scheduleDraftSave();
 }
