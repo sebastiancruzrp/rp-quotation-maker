@@ -965,10 +965,13 @@ function generateDocx() {
       }))
       .filter(pair => pair.name);
 
-    const attentionBlock = attentionPairs.map((pair) => {
-      // The embedded template no longer contains tabs after "Attention:".
-      // Therefore every contact line gets exactly the same two tab stops.
-      const nameLine = "\t\t" + pair.name;
+    const attentionBlock = attentionPairs.map((pair, index) => {
+      // The DOCX template already supplies the two tab stops before the
+      // first {{attention_block}} value. Do NOT add tabs to Person A's name.
+      // For every subsequent contact, and for every position line, add the
+      // two tabs because a normal line break does not retain the template
+      // paragraph's tab stops.
+      const nameLine = (index === 0 ? "" : "\t\t") + pair.name;
       const positionLine = pair.position ? "\n\t\t" + pair.position : "";
       return nameLine + positionLine;
     }).join("\n\n");
