@@ -966,12 +966,9 @@ function generateDocx() {
       .filter(pair => pair.name);
 
     const attentionBlock = attentionPairs.map((pair, index) => {
-      // The DOCX template already supplies the two tab stops before the
-      // first {{attention_block}} value. Do NOT add tabs to Person A's name.
-      // For every subsequent contact, and for every position line, add the
-      // two tabs because a normal line break does not retain the template
-      // paragraph's tab stops.
-      const nameLine = (index === 0 ? "" : "\t\t") + pair.name;
+      // The template supplies the base indentation. Keep one tab for the
+      // first contact, then use two tabs for all subsequent contact lines.
+      const nameLine = (index === 0 ? "\t" : "\t\t") + pair.name;
       const positionLine = pair.position ? "\n\t\t" + pair.position : "";
       return nameLine + positionLine;
     }).join("\n\n");
