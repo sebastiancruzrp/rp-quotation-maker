@@ -873,21 +873,31 @@ function generateDocx() {
     const doc = new window.docxtemplater(zip, { paragraphLoop: true, linebreaks: true });
 
     // Build the attention block from paired name/position lines.
-    // The embedded DOCX template uses {{attention_block}}, so do not pass
-    // the old separate attention_name / attention_position fields here.
+    //
+    // IMPORTANT: the DOCX template has "Attention:" followed by two tab stops
+    // before {{attention_block}}. A normal "\n" line break does NOT retain
+    // those tab stops, so subsequent contacts would jump back to the left
+    // margin. Prefix every new visual line with the same two tabs.
     const attentionNames = document.getElementById("attention_name").value
       .split(/\r?\n/)
-      .map(s => s.trim())
-      .filter(Boolean);
+      .map(s => s.trim());
 
     const attentionPositions = document.getElementById("attention_position").value
       .split(/\r?\n/)
       .map(s => s.trim());
 
-    const attentionBlock = attentionNames.map((name, i) => {
-      const position = attentionPositions[i] || "";
-      return position ? name + "\n" + position : name;
-    }).join("\n");
+    const attentionPairs = attentionNames
+      .map((name, i) => ({
+        name,
+        position: attentionPositions[i] || ""
+      }))
+      .filter(pair => pair.name);
+
+    const attentionBlock = attentionPairs.map((pair, i) => {
+      const prefix = i === 0 ? "" : "\t\t";
+      const positionLine = pair.position ? "\n\t\t" + pair.position : "";
+      return prefix + pair.name + positionLine;
+    }).join("\n\n");
 
     doc.render({
       date: document.getElementById("date").value,
@@ -1138,7 +1148,7 @@ function syncQuoteDropdownToField() {
   if ([...select.options].some((o) => o.value === qno)) select.value = qno;
 }
 
-function fetchSheet(auto) {
+function fetchSheet(auto, cacheBust = false) {
   const statusEl = document.getElementById("sheetStatus");
   const url = document.getElementById("sheetUrl").value.trim();
   if (!url) {
@@ -1153,7 +1163,11 @@ function fetchSheet(auto) {
   statusEl.className = "status";
   statusEl.textContent = auto ? "Loading saved sheet..." : "Fetching...";
 
-  return fetch(url)
+  const requestUrl = cacheBust
+    ? url + (url.includes("?") ? "&" : "?") + "_rp=" + Date.now()
+    : url;
+
+  return fetch(requestUrl)
     .then((res) => {
       if (!res.ok) throw new Error("HTTP " + res.status + " — check the link is a published CSV link.");
       return res.text();
@@ -1167,8 +1181,8 @@ function fetchSheet(auto) {
         quotationNo: matchHeader(headers, ["Quotation No", "Quotation No.", "Quote No", "Quote No."]),
         account: matchHeader(headers, ["Account", "Client Name", "Company", "Company Name"]),
         clientAddress: matchHeader(headers, ["Client Address", "Address"]),
-        attentionName: matchHeader(headers, ["Attention Name", "Attention", "Contact Name", "Contact Person", "Contact"]),
-        attentionPosition: matchHeader(headers, ["Attention Position", "Position", "Contact Position", "Designation"]),
+        attentionName: matchHeader(headers, ["Attention Name", "Attention Name(s)", "Attention", "Contact Name", "Contact Person", "Contact"]),
+        attentionPosition: matchHeader(headers, ["Attention Position", "Attention Position(s)", "Position", "Contact Position", "Designation"]),
         pn: matchHeader(headers, ["PN", "Part Number", "Part No", "Part No."]),
         brand: matchHeader(headers, ["Brand"]),
         itemName: matchHeader(headers, ["Item Name", "Item Name / Model", "Model", "Item Name/Model"]),
@@ -1316,83 +1330,75 @@ function getSavedClient(name) {
   return null;
 }
 
-function getContactsForAccount(name) {
-  if (!name) return [];
-  // Normalize company names for CRM matching.
-  // Exact normalized matches are preferred; the compact form also tolerates
-  // punctuation, NBSPs, commas, periods, hyphens, and common legal suffixes.
-  const norm = (s) => String(s || "")
-    .replace(/\\u00a0/g, " ")
+function normalizeCompanyName(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
     .trim()
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\\s+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
+}
 
-  const compactCompany = (s) => {
-    let v = norm(s);
-    v = v.replace(/\\b(incorporated|corporation|corp|company|co|limited|ltd|llc|plc)\\b/g, " ");
-    return v.replace(/\\s+/g, " ").trim();
-  };
+function compactCompanyName(value) {
+  let v = normalizeCompanyName(value);
+  v = v.replace(/\b(incorporated|corporation|corp|company|co|limited|ltd|llc|plc)\b/g, " ");
+  return v.replace(/\s+/g, " ").trim();
+}
 
-  const target = norm(name);
-  const targetCompact = compactCompany(name);
+function getContactsForAccount(name) {
+  if (!name) return [];
+
+  const target = normalizeCompanyName(name);
+  const targetCompact = compactCompanyName(name);
   const contacts = [];
   const seen = new Map();
 
   const add = (contactName, position, source) => {
-    contactName = (contactName || "").trim();
-    position = (position || "").trim();
+    contactName = String(contactName || "").trim();
+    position = String(position || "").trim();
     if (!contactName) return;
-    const key = norm(contactName);
+
+    const key = normalizeCompanyName(contactName);
     const existing = seen.get(key);
+
     if (existing) {
-      // If the same person exists in both sources, retain the position if one
-      // source has it and mark the contact as coming from both.
       if (!existing.position && position) existing.position = position;
       if (existing.source !== source && existing.source !== "both") existing.source = "both";
       return;
     }
+
     const contact = { name: contactName, position, source };
     seen.set(key, contact);
     contacts.push(contact);
   };
 
-  // CRM can contain multiple rows for the same company.
-  // Prefer an exact normalized company match. If none exists, fall back to
-  // a compact company-name match that ignores punctuation and common legal
-  // suffixes. This keeps CRM contacts available when the CRM and quote sheet
-  // spell the same company slightly differently.
   if (accountCols.account != null && accountCols.attentionName != null) {
     const exactCrmRows = accountRows.filter(
-      (r) => norm(r[accountCols.account]) === target
+      r => normalizeCompanyName(r[accountCols.account]) === target
     );
 
     const crmRows = exactCrmRows.length
       ? exactCrmRows
-      : accountRows.filter(
-          (r) => {
-            const crmAccount = String(r[accountCols.account] || "").trim();
-            return crmAccount &&
-              targetCompact &&
-              compactCompany(crmAccount) === targetCompact;
-          }
-        );
+      : accountRows.filter(r => {
+          const crmAccount = String(r[accountCols.account] || "").trim();
+          return crmAccount &&
+            targetCompact &&
+            compactCompanyName(crmAccount) === targetCompact;
+        });
 
-    crmRows.forEach((r) => add(
+    crmRows.forEach(r => add(
       r[accountCols.attentionName],
       accountCols.attentionPosition != null ? r[accountCols.attentionPosition] : "",
       "crm"
     ));
   }
 
-  // The price-offer sheet is now the persistent second source. Every historical
-  // quotation row for the same account can contribute a contact.
   if (sheetCols.account != null && sheetCols.attentionName != null) {
     sheetRows
-      .filter((r) => norm(r[sheetCols.account]) === target)
-      .forEach((r) => add(
+      .filter(r => normalizeCompanyName(r[sheetCols.account]) === target)
+      .forEach(r => add(
         r[sheetCols.attentionName],
         sheetCols.attentionPosition != null ? r[sheetCols.attentionPosition] : "",
         "price"
@@ -1404,38 +1410,49 @@ function getContactsForAccount(name) {
 
 function lookupAccount(name) {
   if (!name) return null;
-  const norm = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
-  const target = norm(name);
 
-  // CRM remains the preferred address source.
+  const target = normalizeCompanyName(name);
+  const targetCompact = compactCompanyName(name);
+
   if (accountCols.account != null) {
     const exactRows = accountRows.filter(
-      (r) => norm(r[accountCols.account]) === target
+      r => normalizeCompanyName(r[accountCols.account]) === target
     );
 
     const rows = exactRows.length
       ? exactRows
-      : accountRows.filter(
-          (r) => {
-            const crmAccount = String(r[accountCols.account] || "").trim();
-            return crmAccount &&
-              targetCompact &&
-              compactCompany(crmAccount) === targetCompact;
-          }
-        );
+      : accountRows.filter(r => {
+          const crmAccount = String(r[accountCols.account] || "").trim();
+          return crmAccount &&
+            targetCompact &&
+            compactCompanyName(crmAccount) === targetCompact;
+        });
 
     if (rows.length && accountCols.address != null) {
-      const withAddress = rows.find((r) => (r[accountCols.address] || "").trim());
-      if (withAddress) return { address: (withAddress[accountCols.address] || "").trim(), source: "crm" };
+      const withAddress = rows.find(r => String(r[accountCols.address] || "").trim());
+      if (withAddress) {
+        return {
+          address: String(withAddress[accountCols.address] || "").trim(),
+          source: "crm"
+        };
+      }
     }
   }
 
-  // Fall back to the price-offer sheet if the CRM has no address.
   if (sheetCols.account != null && sheetCols.clientAddress != null) {
-    const rows = sheetRows.filter((r) => norm(r[sheetCols.account]) === target);
-    const withAddress = rows.find((r) => (r[sheetCols.clientAddress] || "").trim());
-    if (withAddress) return { address: (withAddress[sheetCols.clientAddress] || "").trim(), source: "price" };
+    const rows = sheetRows.filter(
+      r => normalizeCompanyName(r[sheetCols.account]) === target
+    );
+
+    const withAddress = rows.find(r => String(r[sheetCols.clientAddress] || "").trim());
+    if (withAddress) {
+      return {
+        address: String(withAddress[sheetCols.clientAddress] || "").trim(),
+        source: "price"
+      };
+    }
   }
+
   return null;
 }
 
@@ -1495,12 +1512,39 @@ function parseSheetUrlForMetadata(url) {
   catch (e) { return {spreadsheetId:'', gid:''}; }
 }
 async function postWrite(payload) {
-  await fetch(CONTACT_WRITE_ENDPOINT, {
+  // Apps Script ContentService does not expose the POST response to a browser
+  // cross-origin request, so this request intentionally uses no-cors.
+  // saveContactsToPriceSheet() verifies the write by re-reading the published
+  // CSV instead of assuming that a completed fetch means the server succeeded.
+  return fetch(CONTACT_WRITE_ENDPOINT, {
     method: 'POST',
     mode: 'no-cors',
     headers: {'Content-Type': 'text/plain;charset=utf-8'},
     body: JSON.stringify(payload)
   });
+}
+
+async function refreshSheetForContactWrite(clientName, wantedNames) {
+  const delays = [700, 1200, 1800, 2500, 3500];
+
+  for (let i = 0; i < delays.length; i++) {
+    await new Promise(r => setTimeout(r, delays[i]));
+
+    // Cache-bust the browser request so we do not keep reading an old
+    // published CSV response.
+    await fetchSheet(false, true);
+
+    const contacts = getContactsForAccount(clientName);
+    const found = new Set(
+      contacts.map(c => c.name.trim().toLowerCase())
+    );
+
+    if (wantedNames.every(name => found.has(name))) {
+      return contacts;
+    }
+  }
+
+  return getContactsForAccount(clientName);
 }
 async function saveContactsToPriceSheet() {
   const inline = document.getElementById('clientMemoryInlineStatus');
@@ -1509,28 +1553,108 @@ async function saveContactsToPriceSheet() {
   const address = document.getElementById('client_address').value.trim();
   const selected = getSelectedContacts();
   const pairs = selected.length ? selected : getManualAttentionPairs();
-  if (!clientName) { if (inline) inline.textContent='Enter a client name first.'; return; }
-  if (!pairs.length || !pairs.some(p => p.name)) { if (inline) inline.textContent='Select at least one contact or enter an attention name.'; return; }
-  const sheetMeta = parseSheetUrlForMetadata(document.getElementById('sheetUrl').value.trim());
-  const payload = {action:'appendContacts', gid:sheetMeta.gid, account:clientName, clientAddress:address, contacts:pairs.filter(p => p.name).map(p => ({name:p.name, position:p.position}))};
-  if (inline) inline.textContent='Saving contact(s)…';
-  if (status) { status.className='status'; status.textContent='Writing contact(s) to Google Sheets…'; }
+
+  if (!clientName) {
+    if (inline) inline.textContent = 'Enter a client name first.';
+    return;
+  }
+
+  if (!pairs.length || !pairs.some(p => p.name)) {
+    if (inline) inline.textContent = 'Select at least one contact or enter an attention name.';
+    return;
+  }
+
+  const sheetUrl = document.getElementById('sheetUrl').value.trim();
+  if (!sheetUrl) {
+    if (inline) inline.textContent = 'Enter the Price-offer published CSV link first.';
+    if (status) {
+      status.className = 'status err';
+      status.textContent = 'Write failed: Price-offer sheet URL is missing.';
+    }
+    return;
+  }
+
+  const sheetMeta = parseSheetUrlForMetadata(sheetUrl);
+  const payload = {
+    action: 'appendContacts',
+    gid: sheetMeta.gid,
+    account: clientName,
+    clientAddress: address,
+    contacts: pairs
+      .filter(p => p.name)
+      .map(p => ({ name: p.name, position: p.position }))
+  };
+
+  if (inline) inline.textContent = 'Sending contact(s) to Google Sheets…';
+  if (status) {
+    status.className = 'status';
+    status.textContent = 'Writing contact(s) to Google Sheets…';
+  }
+
   try {
     await postWrite(payload);
-    await new Promise(r => setTimeout(r, 900));
-    await fetchSheet(false);
-    const nowAvailable = getContactsForAccount(clientName);
+
+    if (status) {
+      status.className = 'status';
+      status.textContent = 'Write request sent. Verifying the new contact(s)…';
+    }
+
+    const wantedNames = pairs
+      .map(p => p.name.trim().toLowerCase())
+      .filter(Boolean);
+
+    const wanted = new Set(wantedNames);
+
+    const nowAvailable = await refreshSheetForContactWrite(
+      clientName,
+      wantedNames
+    );
+    const verified = nowAvailable.filter(c =>
+      wanted.has(c.name.trim().toLowerCase())
+    );
+
     window.__rainphilContacts = nowAvailable;
-    const wanted = new Set(pairs.map(p => p.name.trim().toLowerCase()));
-    const selectedIndexes = nowAvailable.map((c,i) => wanted.has(c.name.trim().toLowerCase()) ? i : -1).filter(i => i >= 0);
+
+    const selectedIndexes = nowAvailable
+      .map((c, i) => wanted.has(c.name.trim().toLowerCase()) ? i : -1)
+      .filter(i => i >= 0);
+
     renderContactChips(nowAvailable, selectedIndexes);
     if (selectedIndexes.length) renderSelectedAttentionFields();
-    if (inline) inline.textContent=`Saved ${pairs.length} contact${pairs.length===1?'':'s'} to the Price-offer sheet.`;
-    if (status) { status.className='status ok'; status.textContent=`Saved ${pairs.length} contact${pairs.length===1?'':'s'}.`; }
+
+    const requestedCount = pairs.filter(p => p.name).length;
+
+    if (verified.length === requestedCount) {
+      if (inline) {
+        inline.textContent =
+          `Saved and verified ${verified.length} contact${verified.length === 1 ? '' : 's'} in the Price-offer sheet.`;
+      }
+      if (status) {
+        status.className = 'status ok';
+        status.textContent =
+          `Saved and verified ${verified.length} contact${verified.length === 1 ? '' : 's'}.`;
+      }
+    } else {
+      if (inline) {
+        inline.textContent =
+          `Write request was sent, but only ${verified.length} of ${requestedCount} contact(s) are visible in the published sheet yet.`;
+      }
+      if (status) {
+        status.className = 'status warn';
+        status.textContent =
+          'Contact write sent but could not be fully verified yet. Check the Apps Script deployment and Price-offer sheet.';
+      }
+    }
   } catch (e) {
-    console.error(e); if (inline) inline.textContent='Could not save: '+(e.message||e); if (status) { status.className='status err'; status.textContent='Write failed: '+(e.message||e); }
+    console.error(e);
+    if (inline) inline.textContent = 'Could not save: ' + (e.message || e);
+    if (status) {
+      status.className = 'status err';
+      status.textContent = 'Write failed: ' + (e.message || e);
+    }
   }
 }
+
 function applyAccountLookup(clientName, { force }) {
   const match=lookupAccount(clientName); const contacts=getContactsForAccount(clientName); const addressEl=document.getElementById('client_address'); const nameEl=document.getElementById('attention_name'); const posEl=document.getElementById('attention_position'); const saveWrap=document.getElementById('saveClientWrap'); const inlineStatus=document.getElementById('clientMemoryInlineStatus'); window.__rainphilContacts=contacts;
   if (force) addressEl.value=match?.address||''; else if (match?.address&&!addressEl.value.trim()) addressEl.value=match.address;
