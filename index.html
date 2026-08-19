@@ -1987,7 +1987,7 @@ async function saveContactsToPriceSheet() {
   }
 }
 
-function applyAccountLookup(clientName, { force }) {
+async function applyAccountLookup(clientName, { force }) {
   const match = lookupAccount(clientName);
   const addressEl = document.getElementById('client_address');
   const nameEl = document.getElementById('attention_name');
