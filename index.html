@@ -306,7 +306,7 @@
     <div class="sub" style="margin-bottom:10px">
       The quotation sheet is also checked for <code>Attention Name</code> and <code>Attention Position</code>.
       Add a contact to the price-offer sheet once, and it will be available for that client on future quotations.
-      Contacts from the CRM and price-offer sheet are merged and deduplicated.
+      Contacts from CRM, Price-offer, and Synced Contacts are merged and deduplicated.
     </div>
     <div id="clientMemoryStatus" class="status"></div>
   </div>
@@ -341,7 +341,7 @@ Purchasing"></textarea></div>
     </div>
     <div id="saveClientWrap" style="grid-column: 1 / -1; display:none;">
       <div class="client-memory-actions">
-        <button type="button" class="btn secondary" onclick="saveContactsToPriceSheet()">Save selected contact(s) to Price-offer sheet</button>
+        <button type="button" class="btn secondary" onclick="saveContactsToPriceSheet()">Save selected contact(s) to Synced Contacts</button>
         <button type="button" class="btn ghost" onclick="clearContactSelection()">Clear contact selection</button>
         <span id="clientMemoryInlineStatus" class="sub" style="margin:0;"></span>
       </div>
@@ -1520,7 +1520,7 @@ function fetchSheet(auto, cacheBust = false) {
       if (currentClient) applyAccountLookup(currentClient, { force: false });
 
       statusEl.className = "status ok";
-      statusEl.textContent = "Fetched " + sheetRows.length + " row(s), " + quoteNos.length + " distinct quotation number(s). Contacts in this sheet are available for client lookup.";
+      statusEl.textContent = "Fetched " + sheetRows.length + " row(s), " + quoteNos.length + " distinct quotation number(s). Contacts in this sheet are available for client lookup. Saved contacts are loaded from Synced Contacts.";
       scheduleDraftSave();
     })
     .catch((err) => {
@@ -1638,32 +1638,39 @@ function compactCompanyName(value) {
   return v.replace(/\s+/g, " ").trim();
 }
 
-function getContactsForAccount(name) {
+function mergeContactRecord(contacts, seen, contactName, position, source) {
+  contactName = String(contactName || '').trim();
+  position = String(position || '').trim();
+  if (!contactName) return;
+
+  const key = normalizeCompanyName(contactName);
+  const existing = seen.get(key);
+
+  if (existing) {
+    if (!existing.position && position) existing.position = position;
+    if (existing.source !== source && existing.source !== 'both') {
+      if (existing.source === 'crm' && source === 'price') existing.source = 'both';
+      else if (existing.source === 'crm' && source === 'synced') existing.source = 'both';
+      else if (existing.source === 'price' && source === 'synced') existing.source = 'both';
+      else if (existing.source === 'synced' && source === 'crm') existing.source = 'both';
+      else if (existing.source === 'synced' && source === 'price') existing.source = 'both';
+      else existing.source = 'both';
+    }
+    return;
+  }
+
+  const contact = { name: contactName, position, source };
+  seen.set(key, contact);
+  contacts.push(contact);
+}
+
+function getBaseContactsForAccount(name) {
   if (!name) return [];
 
   const target = normalizeCompanyName(name);
   const targetCompact = compactCompanyName(name);
   const contacts = [];
   const seen = new Map();
-
-  const add = (contactName, position, source) => {
-    contactName = String(contactName || "").trim();
-    position = String(position || "").trim();
-    if (!contactName) return;
-
-    const key = normalizeCompanyName(contactName);
-    const existing = seen.get(key);
-
-    if (existing) {
-      if (!existing.position && position) existing.position = position;
-      if (existing.source !== source && existing.source !== "both") existing.source = "both";
-      return;
-    }
-
-    const contact = { name: contactName, position, source };
-    seen.set(key, contact);
-    contacts.push(contact);
-  };
 
   if (accountCols.account != null && accountCols.attentionName != null) {
     const exactCrmRows = accountRows.filter(
@@ -1673,30 +1680,88 @@ function getContactsForAccount(name) {
     const crmRows = exactCrmRows.length
       ? exactCrmRows
       : accountRows.filter(r => {
-          const crmAccount = String(r[accountCols.account] || "").trim();
-          return crmAccount &&
-            targetCompact &&
-            compactCompanyName(crmAccount) === targetCompact;
+          const crmAccount = String(r[accountCols.account] || '').trim();
+          return crmAccount && targetCompact && compactCompanyName(crmAccount) === targetCompact;
         });
 
-    crmRows.forEach(r => add(
+    crmRows.forEach(r => mergeContactRecord(
+      contacts,
+      seen,
       r[accountCols.attentionName],
-      accountCols.attentionPosition != null ? r[accountCols.attentionPosition] : "",
-      "crm"
+      accountCols.attentionPosition != null ? r[accountCols.attentionPosition] : '',
+      'crm'
     ));
   }
 
   if (sheetCols.account != null && sheetCols.attentionName != null) {
     sheetRows
       .filter(r => normalizeCompanyName(r[sheetCols.account]) === target)
-      .forEach(r => add(
+      .forEach(r => mergeContactRecord(
+        contacts,
+        seen,
         r[sheetCols.attentionName],
-        sheetCols.attentionPosition != null ? r[sheetCols.attentionPosition] : "",
-        "price"
+        sheetCols.attentionPosition != null ? r[sheetCols.attentionPosition] : '',
+        'price'
       ));
   }
 
   return contacts;
+}
+
+async function loadSyncedContactsForAccount(name) {
+  if (!name) return [];
+
+  const url = CONTACT_WRITE_ENDPOINT +
+    '?action=getContacts&account=' + encodeURIComponent(name) +
+    '&_rp=' + Date.now();
+
+  const response = await fetch(url, { cache: 'no-store' });
+  const text = await response.text();
+
+  let result;
+  try {
+    result = JSON.parse(text);
+  } catch (e) {
+    throw new Error('Invalid Synced Contacts response: ' + text.substring(0, 300));
+  }
+
+  if (!result.ok) {
+    throw new Error(result.error || 'Could not load Synced Contacts.');
+  }
+
+  return Array.isArray(result.contacts)
+    ? result.contacts.map(c => ({
+        name: String(c.name || '').trim(),
+        position: String(c.position || '').trim(),
+        source: 'synced'
+      })).filter(c => c.name)
+    : [];
+}
+
+function mergeContactLists(base, synced) {
+  const contacts = [];
+  const seen = new Map();
+
+  base.forEach(c => mergeContactRecord(contacts, seen, c.name, c.position, c.source));
+  synced.forEach(c => mergeContactRecord(contacts, seen, c.name, c.position, 'synced'));
+
+  return contacts;
+}
+
+function getContactsForAccount(name) {
+  return getBaseContactsForAccount(name);
+}
+
+async function getAllContactsForAccount(name) {
+  const base = getBaseContactsForAccount(name);
+
+  try {
+    const synced = await loadSyncedContactsForAccount(name);
+    return mergeContactLists(base, synced);
+  } catch (err) {
+    console.warn('Synced Contacts lookup unavailable:', err);
+    return base;
+  }
 }
 
 function lookupAccount(name) {
@@ -1770,7 +1835,7 @@ function renderContactChips(contacts, selectedIndexes) {
   const selected = new Set(Array.isArray(selectedIndexes) ? selectedIndexes : []);
   chips.innerHTML = contacts.map((c, i) => {
     const position = c.position ? `<small>${escapeText(c.position)}</small>` : `<small>&nbsp;</small>`;
-    const source = c.source === 'both' ? 'CRM + Price-offer' : c.source === 'crm' ? 'CRM' : 'Price-offer';
+    const source = c.source === 'both' ? 'CRM / Price-offer / Synced Contacts' : c.source === 'crm' ? 'CRM' : c.source === 'price' ? 'Price-offer' : 'Synced Contacts';
     return `<label class="contact-chip ${selected.has(i) ? 'active' : ''}" title="Source: ${source}"><input type="checkbox" class="contact-select" data-index="${i}" ${selected.has(i) ? 'checked' : ''} onchange="toggleContactSelection(this)"><span>${escapeText(c.name)}</span>${position}</label>`;
   }).join('');
   wrap.style.display = contacts.length ? 'block' : 'none';
@@ -1799,44 +1864,41 @@ function getManualAttentionPairs() {
   return names.map((name, i) => ({name, position: positions[i] || ''}));
 }
 function parseSheetUrlForMetadata(url) {
-  try { const u = new URL(url); const gid = u.searchParams.get('gid') || ((u.hash.match(/gid=(\d+)/) || [])[1] || ''); const m = u.pathname.match(/\/spreadsheets\/d\/([^/]+)/); return {spreadsheetId:m ? m[1] : '', gid}; }
-  catch (e) { return {spreadsheetId:'', gid:''}; }
+  try {
+    const u = new URL(url);
+    const gid = u.searchParams.get('gid') || ((u.hash.match(/gid=(\d+)/) || [])[1] || '');
+    const m = u.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
+    return { spreadsheetId: m ? m[1] : '', gid };
+  } catch (e) {
+    return { spreadsheetId: '', gid: '' };
+  }
 }
+
 async function postWrite(payload) {
-  // Apps Script ContentService does not expose the POST response to a browser
-  // cross-origin request, so this request intentionally uses no-cors.
-  // saveContactsToPriceSheet() verifies the write by re-reading the published
-  // CSV instead of assuming that a completed fetch means the server succeeded.
-  return fetch(CONTACT_WRITE_ENDPOINT, {
+  const response = await fetch(CONTACT_WRITE_ENDPOINT, {
     method: 'POST',
-    mode: 'no-cors',
-    headers: {'Content-Type': 'text/plain;charset=utf-8'},
+    headers: {
+      'Content-Type': 'text/plain;charset=utf-8'
+    },
     body: JSON.stringify(payload)
   });
-}
 
-async function refreshSheetForContactWrite(clientName, wantedNames) {
-  const delays = [700, 1200, 1800, 2500, 3500];
+  const text = await response.text();
 
-  for (let i = 0; i < delays.length; i++) {
-    await new Promise(r => setTimeout(r, delays[i]));
-
-    // Cache-bust the browser request so we do not keep reading an old
-    // published CSV response.
-    await fetchSheet(false, true);
-
-    const contacts = getContactsForAccount(clientName);
-    const found = new Set(
-      contacts.map(c => c.name.trim().toLowerCase())
-    );
-
-    if (wantedNames.every(name => found.has(name))) {
-      return contacts;
-    }
+  let result;
+  try {
+    result = JSON.parse(text);
+  } catch (e) {
+    throw new Error('Apps Script returned an invalid response: ' + text.substring(0, 500));
   }
 
-  return getContactsForAccount(clientName);
+  if (!result.ok) {
+    throw new Error(result.error || 'Apps Script rejected the contact write.');
+  }
+
+  return result;
 }
+
 async function saveContactsToPriceSheet() {
   const inline = document.getElementById('clientMemoryInlineStatus');
   const status = document.getElementById('writeStatus');
@@ -1855,56 +1917,39 @@ async function saveContactsToPriceSheet() {
     return;
   }
 
-  const sheetUrl = document.getElementById('sheetUrl').value.trim();
-  if (!sheetUrl) {
-    if (inline) inline.textContent = 'Enter the Price-offer published CSV link first.';
-    if (status) {
-      status.className = 'status err';
-      status.textContent = 'Write failed: Price-offer sheet URL is missing.';
-    }
-    return;
-  }
-
-  const sheetMeta = parseSheetUrlForMetadata(sheetUrl);
   const payload = {
     action: 'appendContacts',
-    gid: sheetMeta.gid,
     account: clientName,
     clientAddress: address,
     contacts: pairs
       .filter(p => p.name)
-      .map(p => ({ name: p.name, position: p.position }))
+      .map(p => ({
+        name: p.name,
+        position: p.position
+      }))
   };
 
-  if (inline) inline.textContent = 'Sending contact(s) to Google Sheets…';
+  if (inline) inline.textContent = 'Saving contact(s) to Synced Contacts…';
   if (status) {
     status.className = 'status';
-    status.textContent = 'Writing contact(s) to Google Sheets…';
+    status.textContent = 'Writing contact(s) to Synced Contacts…';
   }
 
   try {
-    await postWrite(payload);
+    const result = await postWrite(payload);
 
-    if (status) {
-      status.className = 'status';
-      status.textContent = 'Write request sent. Verifying the new contact(s)…';
-    }
-
-    const wantedNames = pairs
-      .map(p => p.name.trim().toLowerCase())
-      .filter(Boolean);
-
-    const wanted = new Set(wantedNames);
-
-    const nowAvailable = await refreshSheetForContactWrite(
-      clientName,
-      wantedNames
-    );
-    const verified = nowAvailable.filter(c =>
-      wanted.has(c.name.trim().toLowerCase())
-    );
+    // Reload the authoritative persistent contact store immediately.
+    const synced = await loadSyncedContactsForAccount(clientName);
+    const base = getBaseContactsForAccount(clientName);
+    const nowAvailable = mergeContactLists(base, synced);
 
     window.__rainphilContacts = nowAvailable;
+
+    const wanted = new Set(
+      pairs
+        .map(p => p.name.trim().toLowerCase())
+        .filter(Boolean)
+    );
 
     const selectedIndexes = nowAvailable
       .map((c, i) => wanted.has(c.name.trim().toLowerCase()) ? i : -1)
@@ -1913,29 +1958,25 @@ async function saveContactsToPriceSheet() {
     renderContactChips(nowAvailable, selectedIndexes);
     if (selectedIndexes.length) renderSelectedAttentionFields();
 
-    const requestedCount = pairs.filter(p => p.name).length;
+    const savedCount = Array.isArray(result.saved)
+      ? result.saved.length
+      : pairs.filter(p => p.name).length;
 
-    if (verified.length === requestedCount) {
-      if (inline) {
-        inline.textContent =
-          `Saved and verified ${verified.length} contact${verified.length === 1 ? '' : 's'} in the Price-offer sheet.`;
-      }
-      if (status) {
-        status.className = 'status ok';
-        status.textContent =
-          `Saved and verified ${verified.length} contact${verified.length === 1 ? '' : 's'}.`;
-      }
-    } else {
-      if (inline) {
-        inline.textContent =
-          `Write request was sent, but only ${verified.length} of ${requestedCount} contact(s) are visible in the published sheet yet.`;
-      }
-      if (status) {
-        status.className = 'status warn';
-        status.textContent =
-          'Contact write sent but could not be fully verified yet. Check the Apps Script deployment and Price-offer sheet.';
-      }
+    const appended = Number(result.appended || 0);
+    const duplicates = Math.max(0, savedCount - appended);
+
+    if (inline) {
+      inline.textContent =
+        `Saved ${savedCount} contact${savedCount === 1 ? '' : 's'} to Synced Contacts` +
+        (duplicates ? ` (${duplicates} already existed).` : '.');
     }
+
+    if (status) {
+      status.className = 'status ok';
+      status.textContent =
+        `Contacts saved successfully — ${appended} new, ${duplicates} existing.`;
+    }
+
   } catch (e) {
     console.error(e);
     if (inline) inline.textContent = 'Could not save: ' + (e.message || e);
@@ -1947,15 +1988,72 @@ async function saveContactsToPriceSheet() {
 }
 
 function applyAccountLookup(clientName, { force }) {
-  const match=lookupAccount(clientName); const contacts=getContactsForAccount(clientName); const addressEl=document.getElementById('client_address'); const nameEl=document.getElementById('attention_name'); const posEl=document.getElementById('attention_position'); const saveWrap=document.getElementById('saveClientWrap'); const inlineStatus=document.getElementById('clientMemoryInlineStatus'); window.__rainphilContacts=contacts;
-  if (force) addressEl.value=match?.address||''; else if (match?.address&&!addressEl.value.trim()) addressEl.value=match.address;
-  const currentNames=nameEl.value.split(/\r?\n/).map(s=>s.trim().toLowerCase()).filter(Boolean);
-  const selectedIndexes=contacts.map((c,i)=>currentNames.includes(c.name.trim().toLowerCase())?i:-1).filter(i=>i>=0);
-  if (contacts.length===1&&(!currentNames.length||force)) { nameEl.value=contacts[0].name||''; posEl.value=contacts[0].position||''; renderContactChips(contacts,[0]); }
-  else if (contacts.length>1) { if(force&&!selectedIndexes.length){nameEl.value='';posEl.value='';} renderContactChips(contacts,selectedIndexes); }
-  else renderContactChips([],[]);
-  if(saveWrap) saveWrap.style.display=clientName?'block':'none'; if(inlineStatus&&!clientName) inlineStatus.textContent='';
+  const match = lookupAccount(clientName);
+  const addressEl = document.getElementById('client_address');
+  const nameEl = document.getElementById('attention_name');
+  const posEl = document.getElementById('attention_position');
+  const saveWrap = document.getElementById('saveClientWrap');
+  const inlineStatus = document.getElementById('clientMemoryInlineStatus');
+
+  if (!clientName) {
+    window.__rainphilContacts = [];
+    renderContactChips([], []);
+    if (saveWrap) saveWrap.style.display = 'none';
+    return;
+  }
+
+  if (force) addressEl.value = match?.address || '';
+  else if (match?.address && !addressEl.value.trim()) addressEl.value = match.address;
+
+  const currentNames = nameEl.value.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+
+  // Show CRM + Price-offer contacts immediately.
+  let contacts = getBaseContactsForAccount(clientName);
+  window.__rainphilContacts = contacts;
+
+  let selectedIndexes = contacts
+    .map((c, i) => currentNames.includes(c.name.trim().toLowerCase()) ? i : -1)
+    .filter(i => i >= 0);
+
+  if (contacts.length === 1 && (!currentNames.length || force)) {
+    nameEl.value = contacts[0].name || '';
+    posEl.value = contacts[0].position || '';
+    selectedIndexes = [0];
+  } else if (contacts.length > 1) {
+    if (force && !selectedIndexes.length) {
+      nameEl.value = '';
+      posEl.value = '';
+      selectedIndexes = [];
+    }
+  }
+
+  renderContactChips(contacts, selectedIndexes);
+  if (saveWrap) saveWrap.style.display = 'block';
+  if (inlineStatus && !force) inlineStatus.textContent = '';
+
+  // Then load the persistent Synced Contacts layer.
+  try {
+    const synced = await loadSyncedContactsForAccount(clientName);
+    contacts = mergeContactLists(contacts, synced);
+    window.__rainphilContacts = contacts;
+
+    const latestNames = nameEl.value.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+    selectedIndexes = contacts
+      .map((c, i) => latestNames.includes(c.name.trim().toLowerCase()) ? i : -1)
+      .filter(i => i >= 0);
+
+    if (contacts.length === 1 && (!latestNames.length || force)) {
+      nameEl.value = contacts[0].name || '';
+      posEl.value = contacts[0].position || '';
+      selectedIndexes = [0];
+    }
+
+    renderContactChips(contacts, selectedIndexes);
+  } catch (err) {
+    console.warn('Could not load Synced Contacts:', err);
+  }
 }
+
 function updateQuoteSummary() {
   const selected = document.getElementById("quoteNoSelect")?.value?.trim() || document.getElementById("quotation_no")?.value?.trim() || "";
   const client = document.getElementById("client_name")?.value?.trim() || "";
