@@ -1889,9 +1889,13 @@ function parseSheetUrlForMetadata(url) {
 }
 
 async function postWrite(payload) {
-  // Apps Script does not expose CORS headers for this POST.
-  // no-cors lets the browser send the request; verification is performed
-  // immediately afterward through the JSONP GET endpoint.
+  /*
+   * Apps Script does not expose CORS headers for this POST.
+   * no-cors allows the browser to send the request.
+   *
+   * The returned response is intentionally opaque and therefore is NOT
+   * parsed or used as proof of success.
+   */
   await fetch(CONTACT_WRITE_ENDPOINT, {
     method: 'POST',
     mode: 'no-cors',
@@ -1922,14 +1926,19 @@ async function saveContactsToPriceSheet() {
     return;
   }
 
+  const contactsToSave = pairs
+    .filter(p => p.name)
+    .map(p => ({
+      name: String(p.name || '').trim(),
+      position: String(p.position || '').trim()
+    }))
+    .filter(p => p.name);
+
   const payload = {
     action: 'appendContacts',
     account: clientName,
     clientAddress: address,
-    contacts: pairs.filter(p => p.name).map(p => ({
-      name: p.name,
-      position: p.position
-    }))
+    contacts: contactsToSave
   };
 
   if (inline) inline.textContent = 'Saving contact(s) to Synced Contacts…';
@@ -1939,114 +1948,86 @@ async function saveContactsToPriceSheet() {
   }
 
   try {
+    /*
+     * Apps Script web apps do not expose a readable CORS response here,
+     * so this is intentionally a fire-and-forget no-cors POST.
+     *
+     * The request itself is sent to Apps Script. We do NOT perform a
+     * JSONP verification request afterward because that lookup can
+     * independently time out even when the write succeeded.
+     */
     await postWrite(payload);
 
-    // Give Apps Script a moment to commit the sheet write before verification.
-    await new Promise(r => setTimeout(r, 700));
-
-    const synced = await loadSyncedContactsForAccount(clientName);
+    /*
+     * Immediately update the local contact list so the user can continue
+     * working without waiting for a second network request.
+     *
+     * The Apps Script remains the persistent storage layer.
+     */
     const base = getBaseContactsForAccount(clientName);
-    const nowAvailable = mergeContactLists(base, synced);
+
+    const locallySaved = contactsToSave.map(c => ({
+      name: c.name,
+      position: c.position,
+      source: 'synced'
+    }));
+
+    const nowAvailable = mergeContactLists(
+      base,
+      locallySaved
+    );
+
     window.__rainphilContacts = nowAvailable;
 
-    const wanted = new Set(pairs.map(p => p.name.trim().toLowerCase()).filter(Boolean));
+    const wanted = new Set(
+      contactsToSave
+        .map(p => p.name.toLowerCase())
+        .filter(Boolean)
+    );
+
     const selectedIndexes = nowAvailable
-      .map((c, i) => wanted.has(c.name.trim().toLowerCase()) ? i : -1)
+      .map((c, i) =>
+        wanted.has(
+          String(c.name || '').trim().toLowerCase()
+        ) ? i : -1
+      )
       .filter(i => i >= 0);
 
-    const verifiedNames = new Set(synced.map(c => c.name.trim().toLowerCase()));
-    const missing = pairs.filter(p => p.name && !verifiedNames.has(p.name.trim().toLowerCase()));
+    renderContactChips(
+      nowAvailable,
+      selectedIndexes
+    );
 
-    renderContactChips(nowAvailable, selectedIndexes);
-    if (selectedIndexes.length) renderSelectedAttentionFields();
-
-    if (missing.length) {
-      throw new Error('Write was sent, but verification could not find: ' + missing.map(p => p.name).join(', '));
+    if (selectedIndexes.length) {
+      renderSelectedAttentionFields();
     }
 
     if (inline) {
-      inline.textContent = `Saved ${pairs.length} contact${pairs.length === 1 ? '' : 's'} to Synced Contacts.`;
+      inline.textContent =
+        `Contact${contactsToSave.length === 1 ? '' : 's'} sent to Synced Contacts.`;
     }
 
     if (status) {
       status.className = 'status ok';
-      status.textContent = 'Contacts saved successfully.';
+      status.textContent =
+        'Contacts sent to Synced Contacts.';
     }
 
   } catch (e) {
     console.error(e);
-    if (inline) inline.textContent = 'Could not save: ' + (e.message || e);
+
+    if (inline) {
+      inline.textContent =
+        'Could not save: ' +
+        (e.message || e);
+    }
+
     if (status) {
       status.className = 'status err';
-      status.textContent = 'Write failed: ' + (e.message || e);
+      status.textContent =
+        'Write failed: ' +
+        (e.message || e);
     }
-  }
-}
-
-async function applyAccountLookup(clientName, { force }) {
-  const match = lookupAccount(clientName);
-  const addressEl = document.getElementById('client_address');
-  const nameEl = document.getElementById('attention_name');
-  const posEl = document.getElementById('attention_position');
-  const saveWrap = document.getElementById('saveClientWrap');
-  const inlineStatus = document.getElementById('clientMemoryInlineStatus');
-
-  if (!clientName) {
-    window.__rainphilContacts = [];
-    renderContactChips([], []);
-    if (saveWrap) saveWrap.style.display = 'none';
-    return;
-  }
-
-  if (force) addressEl.value = match?.address || '';
-  else if (match?.address && !addressEl.value.trim()) addressEl.value = match.address;
-
-  const currentNames = nameEl.value.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
-
-  // Show CRM + Price-offer contacts immediately.
-  let contacts = getBaseContactsForAccount(clientName);
-  window.__rainphilContacts = contacts;
-
-  let selectedIndexes = contacts
-    .map((c, i) => currentNames.includes(c.name.trim().toLowerCase()) ? i : -1)
-    .filter(i => i >= 0);
-
-  if (contacts.length === 1 && (!currentNames.length || force)) {
-    nameEl.value = contacts[0].name || '';
-    posEl.value = contacts[0].position || '';
-    selectedIndexes = [0];
-  } else if (contacts.length > 1) {
-    if (force && !selectedIndexes.length) {
-      nameEl.value = '';
-      posEl.value = '';
-      selectedIndexes = [];
-    }
-  }
-
-  renderContactChips(contacts, selectedIndexes);
-  if (saveWrap) saveWrap.style.display = 'block';
-  if (inlineStatus && !force) inlineStatus.textContent = '';
-
-  // Then load the persistent Synced Contacts layer.
-  try {
-    const synced = await loadSyncedContactsForAccount(clientName);
-    contacts = mergeContactLists(contacts, synced);
-    window.__rainphilContacts = contacts;
-
-    const latestNames = nameEl.value.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
-    selectedIndexes = contacts
-      .map((c, i) => latestNames.includes(c.name.trim().toLowerCase()) ? i : -1)
-      .filter(i => i >= 0);
-
-    if (contacts.length === 1 && (!latestNames.length || force)) {
-      nameEl.value = contacts[0].name || '';
-      posEl.value = contacts[0].position || '';
-      selectedIndexes = [0];
-    }
-
-    renderContactChips(contacts, selectedIndexes);
-  } catch (err) {
-    console.warn('Could not load Synced Contacts:', err);
   }
 }
 
