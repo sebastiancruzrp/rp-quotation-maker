@@ -1708,34 +1708,48 @@ function getBaseContactsForAccount(name) {
   return contacts;
 }
 
-async function loadSyncedContactsForAccount(name) {
-  if (!name) return [];
+function loadSyncedContactsForAccount(name) {
+  if (!name) return Promise.resolve([]);
 
-  const url = CONTACT_WRITE_ENDPOINT +
-    '?action=getContacts&account=' + encodeURIComponent(name) +
-    '&_rp=' + Date.now();
+  return new Promise((resolve, reject) => {
+    const callbackName = '__rainphilSyncedContacts_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    const script = document.createElement('script');
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('Synced Contacts lookup timed out.'));
+    }, 15000);
 
-  const response = await fetch(url, { cache: 'no-store' });
-  const text = await response.text();
+    function cleanup() {
+      clearTimeout(timeout);
+      try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
 
-  let result;
-  try {
-    result = JSON.parse(text);
-  } catch (e) {
-    throw new Error('Invalid Synced Contacts response: ' + text.substring(0, 300));
-  }
-
-  if (!result.ok) {
-    throw new Error(result.error || 'Could not load Synced Contacts.');
-  }
-
-  return Array.isArray(result.contacts)
-    ? result.contacts.map(c => ({
+    window[callbackName] = (result) => {
+      cleanup();
+      if (!result || !result.ok) {
+        reject(new Error((result && result.error) || 'Could not load Synced Contacts.'));
+        return;
+      }
+      resolve(Array.isArray(result.contacts) ? result.contacts.map(c => ({
         name: String(c.name || '').trim(),
         position: String(c.position || '').trim(),
         source: 'synced'
-      })).filter(c => c.name)
-    : [];
+      })).filter(c => c.name) : []);
+    };
+
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('Could not reach Synced Contacts.'));
+    };
+
+    script.src = CONTACT_WRITE_ENDPOINT +
+      '?action=getcontacts&account=' + encodeURIComponent(name) +
+      '&callback=' + encodeURIComponent(callbackName) +
+      '&_rp=' + Date.now();
+
+    document.head.appendChild(script);
+  });
 }
 
 function mergeContactLists(base, synced) {
@@ -1875,28 +1889,19 @@ function parseSheetUrlForMetadata(url) {
 }
 
 async function postWrite(payload) {
-  const response = await fetch(CONTACT_WRITE_ENDPOINT, {
+  // Apps Script does not expose CORS headers for this POST.
+  // no-cors lets the browser send the request; verification is performed
+  // immediately afterward through the JSONP GET endpoint.
+  await fetch(CONTACT_WRITE_ENDPOINT, {
     method: 'POST',
+    mode: 'no-cors',
     headers: {
       'Content-Type': 'text/plain;charset=utf-8'
     },
     body: JSON.stringify(payload)
   });
 
-  const text = await response.text();
-
-  let result;
-  try {
-    result = JSON.parse(text);
-  } catch (e) {
-    throw new Error('Apps Script returned an invalid response: ' + text.substring(0, 500));
-  }
-
-  if (!result.ok) {
-    throw new Error(result.error || 'Apps Script rejected the contact write.');
-  }
-
-  return result;
+  return { ok: true };
 }
 
 async function saveContactsToPriceSheet() {
@@ -1921,12 +1926,10 @@ async function saveContactsToPriceSheet() {
     action: 'appendContacts',
     account: clientName,
     clientAddress: address,
-    contacts: pairs
-      .filter(p => p.name)
-      .map(p => ({
-        name: p.name,
-        position: p.position
-      }))
+    contacts: pairs.filter(p => p.name).map(p => ({
+      name: p.name,
+      position: p.position
+    }))
   };
 
   if (inline) inline.textContent = 'Saving contact(s) to Synced Contacts…';
@@ -1936,45 +1939,38 @@ async function saveContactsToPriceSheet() {
   }
 
   try {
-    const result = await postWrite(payload);
+    await postWrite(payload);
 
-    // Reload the authoritative persistent contact store immediately.
+    // Give Apps Script a moment to commit the sheet write before verification.
+    await new Promise(r => setTimeout(r, 700));
+
     const synced = await loadSyncedContactsForAccount(clientName);
     const base = getBaseContactsForAccount(clientName);
     const nowAvailable = mergeContactLists(base, synced);
-
     window.__rainphilContacts = nowAvailable;
 
-    const wanted = new Set(
-      pairs
-        .map(p => p.name.trim().toLowerCase())
-        .filter(Boolean)
-    );
-
+    const wanted = new Set(pairs.map(p => p.name.trim().toLowerCase()).filter(Boolean));
     const selectedIndexes = nowAvailable
       .map((c, i) => wanted.has(c.name.trim().toLowerCase()) ? i : -1)
       .filter(i => i >= 0);
 
+    const verifiedNames = new Set(synced.map(c => c.name.trim().toLowerCase()));
+    const missing = pairs.filter(p => p.name && !verifiedNames.has(p.name.trim().toLowerCase()));
+
     renderContactChips(nowAvailable, selectedIndexes);
     if (selectedIndexes.length) renderSelectedAttentionFields();
 
-    const savedCount = Array.isArray(result.saved)
-      ? result.saved.length
-      : pairs.filter(p => p.name).length;
-
-    const appended = Number(result.appended || 0);
-    const duplicates = Math.max(0, savedCount - appended);
+    if (missing.length) {
+      throw new Error('Write was sent, but verification could not find: ' + missing.map(p => p.name).join(', '));
+    }
 
     if (inline) {
-      inline.textContent =
-        `Saved ${savedCount} contact${savedCount === 1 ? '' : 's'} to Synced Contacts` +
-        (duplicates ? ` (${duplicates} already existed).` : '.');
+      inline.textContent = `Saved ${pairs.length} contact${pairs.length === 1 ? '' : 's'} to Synced Contacts.`;
     }
 
     if (status) {
       status.className = 'status ok';
-      status.textContent =
-        `Contacts saved successfully — ${appended} new, ${duplicates} existing.`;
+      status.textContent = 'Contacts saved successfully.';
     }
 
   } catch (e) {
