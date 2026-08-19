@@ -1908,6 +1908,73 @@ async function postWrite(payload) {
   return { ok: true };
 }
 
+async function applyAccountLookup(clientName, { force }) {
+  const match = lookupAccount(clientName);
+  const addressEl = document.getElementById('client_address');
+  const nameEl = document.getElementById('attention_name');
+  const posEl = document.getElementById('attention_position');
+  const saveWrap = document.getElementById('saveClientWrap');
+  const inlineStatus = document.getElementById('clientMemoryInlineStatus');
+
+  if (!clientName) {
+    window.__rainphilContacts = [];
+    renderContactChips([], []);
+    if (saveWrap) saveWrap.style.display = 'none';
+    return;
+  }
+
+  if (force) addressEl.value = match?.address || '';
+  else if (match?.address && !addressEl.value.trim()) addressEl.value = match.address;
+
+  const currentNames = nameEl.value.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+
+  // Show CRM + Price-offer contacts immediately.
+  let contacts = getBaseContactsForAccount(clientName);
+  window.__rainphilContacts = contacts;
+
+  let selectedIndexes = contacts
+    .map((c, i) => currentNames.includes(c.name.trim().toLowerCase()) ? i : -1)
+    .filter(i => i >= 0);
+
+  if (contacts.length === 1 && (!currentNames.length || force)) {
+    nameEl.value = contacts[0].name || '';
+    posEl.value = contacts[0].position || '';
+    selectedIndexes = [0];
+  } else if (contacts.length > 1) {
+    if (force && !selectedIndexes.length) {
+      nameEl.value = '';
+      posEl.value = '';
+      selectedIndexes = [];
+    }
+  }
+
+  renderContactChips(contacts, selectedIndexes);
+  if (saveWrap) saveWrap.style.display = 'block';
+  if (inlineStatus && !force) inlineStatus.textContent = '';
+
+  // Then load the persistent Synced Contacts layer.
+  try {
+    const synced = await loadSyncedContactsForAccount(clientName);
+    contacts = mergeContactLists(contacts, synced);
+    window.__rainphilContacts = contacts;
+
+    const latestNames = nameEl.value.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+    selectedIndexes = contacts
+      .map((c, i) => latestNames.includes(c.name.trim().toLowerCase()) ? i : -1)
+      .filter(i => i >= 0);
+
+    if (contacts.length === 1 && (!latestNames.length || force)) {
+      nameEl.value = contacts[0].name || '';
+      posEl.value = contacts[0].position || '';
+      selectedIndexes = [0];
+    }
+
+    renderContactChips(contacts, selectedIndexes);
+  } catch (err) {
+    console.warn('Could not load Synced Contacts:', err);
+  }
+}
+
 async function saveContactsToPriceSheet() {
   const inline = document.getElementById('clientMemoryInlineStatus');
   const status = document.getElementById('writeStatus');
