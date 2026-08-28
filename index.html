@@ -158,15 +158,25 @@
   .generate-main .eyebrow { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#8a8178; font-weight:700; margin-bottom:3px; }
   .generate-main .generate-title { font-size:14px; font-weight:700; color:var(--ink); }
   .generate-main .generate-sub { font-size:11px; color:#777; margin-top:2px; }
-  .btn { background:var(--accent); color:#fff; border:none; padding:9px 16px; border-radius:6px; font-size:13px; cursor:pointer; }
+  .btn { background:var(--accent); color:#fff; border:none; padding:9px 16px; border-radius:6px; font-size:13px; cursor:pointer; transition:background .15s ease,box-shadow .15s ease,transform .08s ease; }
   .btn:hover { background:var(--accent-strong); }
+  .btn:active { transform:scale(.97); }
+  .btn:disabled { opacity:.6; cursor:not-allowed; transform:none; }
   .btn.primary-large { padding:11px 18px; box-shadow:0 3px 9px rgba(36,87,197,.15); }
+  .btn.primary-large:hover { box-shadow:0 4px 12px rgba(36,87,197,.22); }
   .btn.secondary { background:#fff; color:var(--accent); border:1px solid var(--accent); }
   .btn.secondary:hover { background:#f2f5ff; }
   .btn.ghost { background:transparent; color:#777; border:1px solid var(--line); }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid rgba(255,255,255,.4); border-top-color:#fff; border-radius:50%; animation:spin .6s linear infinite; margin-right:7px; vertical-align:-2px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @keyframes statusIn { from { opacity:0; transform:translateY(-2px); } to { opacity:1; transform:none; } }
   .totals { text-align:right; font-size:14px; margin-top:10px; color:#555; }
   .totals b { color:var(--accent-strong); font-size:14px; }
-  .status { font-size:12px; margin-top:10px; min-height:16px; }
+  .status { font-size:12px; margin-top:10px; min-height:16px; animation:statusIn .18s ease; }
+  .field-warn { border-color:#c98a1a !important; box-shadow:0 0 0 2px rgba(201,138,26,.18) !important; animation:fieldWarn .3s ease; }
+  @keyframes fieldWarn { 0%,100% { transform:translateX(0); } 25% { transform:translateX(-3px); } 75% { transform:translateX(3px); } }
+  @keyframes rowIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
+  tbody tr.row-new { animation:rowIn .2s ease; }
   .status.ok { color:#1a7a3c; }
   .status.err { color:#a01818; }
   .status.warn { color:#8a6200; }
@@ -457,7 +467,7 @@ Purchasing"></textarea></div>
     </div>
     <div class="generate-actions">
       <button class="btn ghost" onclick="clearDraft()" title="Clear saved draft and reset form">Start fresh</button>
-      <button class="btn primary-large" onclick="generateDocx()">Generate Quotation (.docx)</button>
+      <button id="generateBtn" class="btn primary-large" onclick="generateDocx()">Generate Quotation (.docx)</button>
     </div>
   </div>
   <div id="status" class="status"></div>
@@ -628,6 +638,7 @@ function addRow(data) {
     </td>
   `;
   tbody.appendChild(tr);
+  if (!data) tr.classList.add("row-new");
   if (isIncluded) toggleIncluded(tr.querySelector(".isIncluded"), { skipSave: true });
   updatePriceSource(tr);
   autoGrow(tr.querySelector(".description"));
@@ -1037,18 +1048,35 @@ function maybeAutoGenerateSubject() {
 
 function collectWarnings() {
   const warnings = [];
-  if (!document.getElementById("quotation_no").value.trim()) warnings.push("quotation number is empty");
-  if (!document.getElementById("date").value.trim()) warnings.push("date is empty");
-  if (!document.getElementById("client_name").value.trim()) warnings.push("client name is empty");
-  if (!document.getElementById("subject").value.trim()) warnings.push("subject is empty");
+  clearFieldFlags();
+  const requiredIds = ["quotation_no", "date", "client_name", "subject"];
+  requiredIds.forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el.value.trim()) {
+      warnings.push(id.replace(/_/g, " ") + " is empty");
+      flagField(el);
+    }
+  });
   const rows = document.querySelectorAll("#itemsBody tr");
   if (rows.length === 0) warnings.push("no items added");
   rows.forEach((tr, i) => {
     if (rowIsIncluded(tr)) return;
-    const price = parseFloat(tr.querySelector(".unitPrice").value);
-    if (!price) warnings.push("row " + (i + 1) + " has no unit price");
+    const priceInput = tr.querySelector(".unitPrice");
+    const price = parseFloat(priceInput.value);
+    if (!price) {
+      warnings.push("row " + (i + 1) + " has no unit price");
+      flagField(priceInput);
+    }
   });
   return warnings;
+}
+
+function flagField(el) {
+  el.classList.add("field-warn");
+}
+
+function clearFieldFlags() {
+  document.querySelectorAll(".field-warn").forEach((el) => el.classList.remove("field-warn"));
 }
 
 function parseInclusions(raw) {
@@ -1068,10 +1096,16 @@ function b64ToArrayBuffer(b64) {
 
 function generateDocx() {
   const statusEl = document.getElementById("status");
+  const btn = document.getElementById("generateBtn");
   const warnings = collectWarnings();
 
   statusEl.className = "status";
   statusEl.textContent = "Generating...";
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.originalText = btn.dataset.originalText || btn.textContent;
+    btn.innerHTML = '<span class="spin"></span>Generating…';
+  }
 
   try {
     const items = [];
@@ -1139,14 +1173,18 @@ function generateDocx() {
     const deliveryText = document.getElementById("deliveryText").value.trim() || DEFAULT_DELIVERY;
 
     const zip = new PizZip(b64ToArrayBuffer(TEMPLATE_B64));
-    const doc = new window.docxtemplater(zip, { paragraphLoop: true, linebreaks: true });
+    const doc = new window.docxtemplater(zip, {
+      paragraphLoop: true,
+      linebreaks: true,
+      nullGetter: () => "", // safety net: any future missing tag renders blank, not "undefined"
+    });
 
-    // Build the attention block from paired name/position lines.
-    //
-    // IMPORTANT: the DOCX template has "Attention:" followed by two tab stops
-    // before {{attention_block}}. A normal "\n" line break does NOT retain
-    // those tab stops, so subsequent contacts would jump back to the left
-    // margin. Prefix every new visual line with the same two tabs.
+    // The DOCX template only has single {attention_name} / {attention_position}
+    // tags (no {attention_block} tag exists in it), so that key was never
+    // rendering — docxtemplater's default nullGetter prints missing tags as
+    // the literal word "undefined". Build the two tags it actually has,
+    // joining multiple contacts with line breaks (linebreaks:true below
+    // turns \n into real line breaks in the doc).
     const attentionNames = document.getElementById("attention_name").value
       .split(/\r?\n/)
       .map(s => s.trim());
@@ -1162,19 +1200,12 @@ function generateDocx() {
       }))
       .filter(pair => pair.name);
 
-    const attentionBlock = attentionPairs.map((pair, index) => {
-      // The template supplies the base indentation. Keep one tab for the
-      // first contact, then use two tabs for all subsequent contact lines.
-      const nameLine = (index === 0 ? "\t" : "\t\t") + pair.name;
-      const positionLine = pair.position ? "\n\t\t" + pair.position : "";
-      return nameLine + positionLine;
-    }).join("\n\n");
-
     doc.render({
       date: document.getElementById("date").value,
       client_name: document.getElementById("client_name").value,
       client_address: document.getElementById("client_address").value,
-      attention_block: attentionBlock,
+      attention_name: attentionPairs.map(p => p.name).join("\n") || "",
+      attention_position: attentionPairs.map(p => p.position).join("\n") || "",
       quotation_no: document.getElementById("quotation_no").value,
       subject: document.getElementById("subject").value,
       salutation: document.getElementById("salutation").value,
@@ -1207,6 +1238,11 @@ function generateDocx() {
     statusEl.className = "status err";
     statusEl.textContent = "Error: " + (err.message || err);
     console.error(err);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.originalText;
+    }
   }
 }
 
@@ -1371,6 +1407,11 @@ function setupAutoSave() {
     }
   });
   document.getElementById("itemsBody").addEventListener("change", scheduleDraftSave);
+  document.addEventListener("input", (e) => {
+    if (e.target.classList && e.target.classList.contains("field-warn")) {
+      e.target.classList.remove("field-warn");
+    }
+  });
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".row-actions")) closeAllRowMenus();
     if (!e.target.closest(".help-wrap")) {
@@ -2237,6 +2278,12 @@ function loadItemsForSelectedQuote() {
     if (acct) document.getElementById("client_name").value = acct;
   }
   applyAccountLookup(acct, { force: true });
+  // Programmatic .value assignments above don't fire "input" events, so the
+  // internal-name/subject auto-suggestion (which those events normally
+  // trigger) never ran for a quote loaded this way — the filename then fell
+  // back to just the quote number instead of leading with the internal name.
+  maybeAutoGenerateSubject();
+  maybeAutoGenerateInternalQuoteName();
 
   statusEl.className = "status ok";
   statusEl.textContent = "Loaded " + matching.length + " item(s) for " + selected + (acct ? " — " + acct : "") + ".";
