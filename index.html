@@ -324,10 +324,11 @@
     <div>
       <label>Internal Quote Name</label>
       <div style="display:flex; gap:8px; align-items:center;">
-        <input id="internal_quote_name" placeholder="SIC26-024 Edgeworthy Micro Lab" style="flex:1;">
+        <input id="internal_quote_name" placeholder="Edgeworthy Micro Lab" style="flex:1;">
         <button type="button" class="btn secondary" onclick="suggestInternalQuoteName()">Suggest</button>
       </div>
-      <div class="sub" id="internalQuoteNameHint" style="margin-top:5px;">Used for the generated filename only.</div>
+      <div class="sub" id="internalQuoteNameHint" style="margin-top:5px;">Used for the generated filename only. The Internal Quote No. prefix (e.g. SIC26-024) is pulled automatically from the CSV.</div>
+      <input type="hidden" id="internal_quote_no_csv">
     </div>
     <div><label>Date</label><input id="date" placeholder="06 August 2026"></div>
     <div><label>Client Name</label><input id="client_name" placeholder="ABC Corporation"></div>
@@ -503,7 +504,7 @@ let suppressQuoteLoad = false;
 let draftSaveTimer = null;
 
 const DRAFT_FIELD_IDS = [
-  "quotation_no", "internal_quote_name", "date", "client_name", "client_address",
+  "quotation_no", "internal_quote_name", "internal_quote_no_csv", "date", "client_name", "client_address",
   "attention_name", "attention_position", "subject", "salutation",
   "validityText", "paymentText", "deliveryText",
 ];
@@ -568,11 +569,13 @@ function maybeAutoGenerateInternalQuoteName() {
 function getOutputFilename() {
   const quoteNo = cleanInternalQuoteName(document.getElementById("quotation_no")?.value);
   const internalName = cleanInternalQuoteName(document.getElementById("internal_quote_name")?.value);
+  // Internal Quote No. prefix (e.g. "SIC26-029") comes straight from the
+  // CSV's "Internal Quote No." column when a quote was loaded from the
+  // sheet; it's blank for quotes built manually without a sheet row.
+  const csvPrefix = cleanInternalQuoteName(document.getElementById("internal_quote_no_csv")?.value);
 
-  if (internalName && quoteNo) return internalName + " " + quoteNo + ".docx";
-  if (internalName) return internalName + ".docx";
-  if (quoteNo) return quoteNo + ".docx";
-  return "Quotation.docx";
+  const parts = [csvPrefix, internalName, quoteNo].filter(Boolean);
+  return (parts.length ? parts.join(" ") : "Quotation") + ".docx";
 }
 
 function todayFormatted() {
@@ -1702,6 +1705,7 @@ function fetchSheet(auto, cacheBust = false) {
 
       sheetCols = {
         quotationNo: matchHeader(headers, ["Quotation No", "Quotation No.", "Quote No", "Quote No."]),
+        internalQuoteNo: matchHeader(headers, ["Internal Quote No", "Internal Quote No.", "Internal Quote Number", "Internal Tracking No", "Internal Tracking No."]),
         account: matchHeader(headers, ["Account", "Client Name", "Company", "Company Name"]),
         clientAddress: matchHeader(headers, ["Client Address", "Address"]),
         attentionName: matchHeader(headers, ["Attention Name", "Attention Name(s)", "Attention", "Contact Name", "Contact Person", "Contact"]),
@@ -1719,7 +1723,7 @@ function fetchSheet(auto, cacheBust = false) {
         bundled: matchHeader(headers, ["Included", "Bundled", "Bundle", "Incl"]),
       };
 
-      const required = Object.entries(sheetCols).filter(([k, v]) => v === null && !["vatMode", "brand", "bundled", "offerPrice", "account", "inclusions"].includes(k));
+      const required = Object.entries(sheetCols).filter(([k, v]) => v === null && !["vatMode", "brand", "bundled", "offerPrice", "account", "inclusions", "internalQuoteNo"].includes(k));
       if (required.length) {
         statusEl.className = "status err";
         statusEl.textContent = "Couldn't find columns for: " + required.map(([k]) => k).join(", ") + ". Found headers: " + headers.join(", ");
@@ -2458,6 +2462,14 @@ function loadItemsForSelectedQuote() {
   if (!matching.length) addRow();
 
   document.getElementById("quotation_no").value = selected;
+
+  // Internal Quote No. prefix for the filename comes straight from the CSV;
+  // clear it first so a quote without that column (or a re-selected quote
+  // missing the value) doesn't keep a stale prefix from a previous quote.
+  document.getElementById("internal_quote_no_csv").value =
+    (sheetCols.internalQuoteNo != null && matching.length)
+      ? cleanInternalQuoteName(matching[0][sheetCols.internalQuoteNo] || "")
+      : "";
 
   // A newly selected quote should never inherit client details from whatever
   // was previously loaded. Clear first, then refill from the sheet if available.
