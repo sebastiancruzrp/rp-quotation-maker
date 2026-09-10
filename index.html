@@ -1417,8 +1417,7 @@ async function generateDocx() {
       compressionOptions: { level: 9 },
     });
     const filename = getOutputFilename();
-    const outputName = `${str_(document.getElementById("quotation_no")?.value) || "Quote"} - ${filename}`;
-    const savedMsg = await saveGeneratedFile(blob, outputName);
+    const savedMsg = await saveGeneratedFile(blob, filename);
 
     if (warnings.length) {
       statusEl.className = "status warn";
