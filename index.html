@@ -100,6 +100,14 @@
   .subtotal-head, .total-head { text-align:right !important; padding-right:12px !important; vertical-align:bottom !important; }
   tr.included-row > td { background:#faf6f0; }
   tr.included-row .unitPrice,tr.included-row .vatMode { opacity:.45; }
+  /* Included rows are visually subordinate to the main priced item above. */
+  tr.included-row > td.item-name-cell {
+    padding-left:24px;
+    border-left:3px solid #d9c6ae;
+  }
+  tr.included-row > td.item-field {
+    padding-left:14px;
+  }
 
   .row-actions { position:relative; text-align:center; width:42px; min-width:42px; }
   .row-actions button { width:30px; height:30px; background:#fff; border:1px solid #d8d2c8; border-radius:6px; color:var(--accent); cursor:pointer; font-size:18px; line-height:1; padding:0; transition:background .12s ease,border-color .12s ease,box-shadow .12s ease; }
@@ -1402,7 +1410,7 @@ async function generateDocx() {
           qty: qty,
           uom: uom,
           subtotal: INCLUDED_LABEL,
-          vat: fmt(0),
+          vat: INCLUDED_LABEL,
           total_price: INCLUDED_LABEL,
         });
         return;
@@ -2542,10 +2550,21 @@ function loadItemsForSelectedQuote() {
       : "";
     const vatRaw = rawVatStr.includes("EX") ? "EX" : "INC";
 
-    let isIncluded = false;
+    // Some price-offer sheets mark bundled items by writing "Included"
+    // directly in Offer Price or Unit Price instead of using a separate flag.
+    const offerPriceText = sheetCols.offerPrice != null
+      ? String(row[sheetCols.offerPrice] ?? "").trim()
+      : "";
+    const unitPriceText = sheetCols.unitPrice != null
+      ? String(row[sheetCols.unitPrice] ?? "").trim()
+      : "";
+    const includedInPrice = /included/i.test(offerPriceText) || /included/i.test(unitPriceText);
+
+    let isIncluded = includedInPrice;
     if (sheetCols.bundled != null) {
       const bundledVal = (row[sheetCols.bundled] || "").toString().trim().toLowerCase();
-      isIncluded = ["yes", "y", "true", "1", "included", "incl", "bundled"].includes(bundledVal);
+      isIncluded = isIncluded ||
+        ["yes", "y", "true", "1", "included", "incl", "bundled"].includes(bundledVal);
     }
     addRow({
       pn: (row[sheetCols.pn] || "").trim(),
